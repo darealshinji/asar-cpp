@@ -39,61 +39,65 @@ size_t asarArchive::numSubfile( DIR* dir ) {
 	return uFiles-2; // remove '.' and '..' dirs
 }
 
-// Pack files, not working at the moment
-void asarArchive::packFiles( std::string sPath, std::string &sFiles, std::vector<char> &vBinFile ) {
-/*
+bool asarArchive::createJsonHeader( const std::string &sPath, std::string &sHeader, std::vector<std::string> &vFileList ) {
 	DIR* dir = opendir( sPath.c_str() );
-
-	if ( !dir )
-		return;
+	if ( !dir ) {
+		perror("opendir()");
+		return false;
+	}
 
 	struct dirent* file;
 	size_t uFolderSize = numSubfile( dir );
 	size_t uFileNum = 0;
 
 	while ( (file = readdir(dir)) ) {
-		if ( !strcmp(file->d_name, ".") || !strcmp(file->d_name, "..") )
+		if ( strcmp(file->d_name, ".") == 0 || strcmp(file->d_name, "..") == 0 )
 			continue;
 
-		std::string sLocalPath = (sPath + file->d_name);
-		const char* cPath = sLocalPath.c_str();
-
-		DIR* isDir = opendir( cPath );
+		std::string sLocalPath = sPath;
+		sLocalPath += DIR_SEPARATOR;
+		sLocalPath += file->d_name;
+		DIR* isDir = opendir( sLocalPath.c_str() );
 
 		if ( isDir ) {
-			// WHO NEEDS A JSON LIB WHEN WE CAN DO THE DIRTY WORK OURSELVES
-			sFiles += (std::string)"\"" + file->d_name + "\":{\"files\":{";
+			sHeader += '"';
+			sHeader += file->d_name;
+			sHeader += "\":{\"files\":{";
 			closedir( isDir );
-			packFiles( sLocalPath + DIR_SEPARATOR, sFiles, vBinFile );
-			sFiles.push_back('}');
-			sFiles.push_back('}');
+			createJsonHeader( sLocalPath, sHeader, vFileList );
+			sHeader += "}}";
 		} else {
 			std::ifstream ifsFile( sLocalPath, std::ios::binary | std::ios::ate );
-			size_t szFile = ifsFile.tellg();
-			std::vector<char> fileBuf ( szFile );
-			ifsFile.seekg(0, std::ios::beg);
-			ifsFile.read( fileBuf.data(), szFile );
-			for ( auto bChar : fileBuf )
-				vBinFile.push_back(bChar);
+			if ( !ifsFile.is_open() ) {
+				std::cerr << "cannot open file for reading: " << sLocalPath << std::endl;
+				closedir(dir);
+				return false;
+			}
 
+			size_t szFile = ifsFile.tellg();
 			ifsFile.close();
 
-			sFiles += (std::string)"\"" + file->d_name + "\":{\"size\":" + std::to_string(szFile) + ",\"offset\":\"" + std::to_string(m_szOffset) + "\"}";
+			sHeader += '"';
+			sHeader += file->d_name;
+			sHeader += "\":{\"size\":" + std::to_string(szFile) + ",\"offset\":\"" + std::to_string(m_szOffset) + "\"}";
 			m_szOffset += szFile;
+			vFileList.push_back( sLocalPath );
 		}
+
 		if ( ++uFileNum < uFolderSize )
-			sFiles.push_back(',');
+			sHeader.push_back(',');
 	}
 
 	closedir(dir);
-*/
+
+	return true;
 }
 
 void asarArchive::unpackFiles( rapidjson::Value& object, const std::string &sPath ) {
 	if ( !object.IsObject() ) // how ?
 		return;
 
-	if ( extract && !sPath.empty() )
+	if ( m_extract && !sPath.empty() )
 		MKDIR( sPath.c_str() );
 
 	for ( auto itr = object.MemberBegin(); itr != object.MemberEnd(); ++itr ) {
@@ -101,7 +105,7 @@ void asarArchive::unpackFiles( rapidjson::Value& object, const std::string &sPat
 		rapidjson::Value& vMember = itr->value;
 		if ( vMember.IsObject() ) {
 			if ( vMember.HasMember("files") ) {
-				if ( extract )
+				if ( m_extract )
 					MKDIR( sFilePath.c_str() );
 
 				unpackFiles( vMember["files"], sFilePath + DIR_SEPARATOR );
@@ -109,7 +113,7 @@ void asarArchive::unpackFiles( rapidjson::Value& object, const std::string &sPat
 				if ( !( vMember.HasMember("size") && vMember.HasMember("offset") && vMember["size"].IsInt() && vMember["offset"].IsString() ) )
 					continue;
 
-				if ( !extract ) {
+				if ( !m_extract ) {
 					std::cout << '\t' << sFilePath << std::endl;
 					continue;
 				}
@@ -137,7 +141,7 @@ void asarArchive::unpackFiles( rapidjson::Value& object, const std::string &sPat
 bool asarArchive::unpack( const std::string &sArchivePath, std::string sExtractPath ) {
 	m_ifsInputFile.open( sArchivePath, std::ios::binary );
 	if ( !m_ifsInputFile ) {
-		perror("");
+		std::cerr << "cannot open file: " << sArchivePath << std::endl;
 		return false;
 	}
 
@@ -169,30 +173,76 @@ bool asarArchive::unpack( const std::string &sArchivePath, std::string sExtractP
 	return true;
 }
 
-// Pack archive, not working at the moment
-bool asarArchive::pack( std::string sPath, std::string sFinalName ) {
-/*
-	std::string sFiles = "{\"files\":{";
-	std::vector<char> vBinFile;
+// Pack archive
+bool asarArchive::pack( const std::string &sFinalName, const std::string &sPath ) {
+	std::vector<std::string> vFileList;
+	std::string sHeader = "{\"files\":{";
 
-	packFiles( sPath, sFiles, vBinFile );
-	sFiles.push_back('}');
-	sFiles.push_back('}');
+	if ( !createJsonHeader( sPath, sHeader, vFileList ) )
+		return false;
+
+	sHeader += "}}";
 
 	std::ofstream ofsOutputFile( sFinalName, std::ios::binary | std::ios::trunc );
-	ofsOutputFile.write( sFiles.c_str(), sFiles.length() );
-	ofsOutputFile.write( &vBinFile[0], vBinFile.size() );
+	if ( !ofsOutputFile.is_open() ) {
+		std::cerr << "cannot open file for writing: " << sFinalName << std::endl;
+		return false;
+	}
+
+	char cHeader[16];
+	char *p = cHeader;
+
+	// offset 0x00
+	uint32_t uSize = 4;
+	memcpy( p, &uSize, 4 );
+	p = cHeader + 4;
+
+	// offset 0x04
+	uSize = sHeader.size() + 8;
+	memcpy( p, &uSize, 4 );
+	p += 4;
+
+	// offset 0x08
+	uSize -= 4;
+	memcpy( p, &uSize, 4 );
+	p += 4;
+
+	// offset 0x0C
+	uSize -= 4;
+	memcpy( p, &uSize, 4 );
+
+	ofsOutputFile.write( cHeader, 16 );
+	ofsOutputFile << sHeader;
+
+	for (const auto &e : vFileList) {
+		std::ifstream ifsFile( e, std::ios::binary | std::ios::ate );
+
+		if ( !ifsFile.is_open() ) {
+			std::cerr << "cannot open file for reading: " << e << std::endl;
+			ofsOutputFile.close();
+			return false;
+		}
+
+		size_t szFile = ifsFile.tellg();
+		ifsFile.seekg(0, std::ios::beg);
+
+		for (size_t i=0; i < szFile; ++i)
+			ofsOutputFile.put(ifsFile.get());
+
+		ifsFile.close();
+	}
+
 	ofsOutputFile.close();
-*/
+
 	return true;
 }
 
 // List archive content
 bool asarArchive::list( const std::string &sArchivePath ) {
-	extract = false;
-	std::cout << sArchivePath << ":" << std::endl;
+	m_extract = false;
+	std::cout << sArchivePath << ':' << std::endl;
 	bool ret = unpack( sArchivePath );
-	extract = true;
+	m_extract = true;
 
 	return ret;
 }
