@@ -1,6 +1,8 @@
 #include <iostream>
 #include <string>
+#include <algorithm>
 #include <fstream>
+#include <utility>
 #include <rapidjson/document.h>
 #include <rapidjson/error/en.h>
 #include <dirent.h>
@@ -41,7 +43,7 @@ size_t asarArchive::numSubfile( DIR* dir ) {
 	return uFiles-2; // remove '.' and '..' dirs
 }
 
-bool asarArchive::createJsonHeader( const std::string &sPath, std::string &sHeader, std::vector<std::string> &vFileList ) {
+bool asarArchive::createJsonHeader( const std::string &sPath, std::string &sHeader, std::vector< std::pair<std::string, size_t> > &vFileList ) {
 	DIR* dir = opendir( sPath.c_str() );
 	if ( !dir ) {
 		perror(sPath.c_str());
@@ -51,19 +53,23 @@ bool asarArchive::createJsonHeader( const std::string &sPath, std::string &sHead
 	struct dirent* file;
 	size_t uFolderSize = numSubfile( dir );
 	size_t uFileNum = 0;
+	std::vector<std::string> entries;
 
 	while ( (file = readdir(dir)) ) {
-		if ( strcmp(file->d_name, ".") == 0 || strcmp(file->d_name, "..") == 0 )
-			continue;
+		if ( strcmp(file->d_name, ".") != 0 && strcmp(file->d_name, "..") != 0 )
+			entries.push_back(file->d_name);
+	}
+	std::sort(entries.begin(), entries.end());
 
+	for ( const auto &e : entries ) {
 		std::string sLocalPath = sPath;
 		sLocalPath += DIR_SEPARATOR;
-		sLocalPath += file->d_name;
+		sLocalPath += e;
 		DIR* isDir = opendir( sLocalPath.c_str() );
 
 		if ( isDir ) {
 			sHeader += '"';
-			sHeader += file->d_name;
+			sHeader += e;
 			sHeader += "\":{\"files\":{";
 			closedir( isDir );
 			createJsonHeader( sLocalPath, sHeader, vFileList );
@@ -80,10 +86,11 @@ bool asarArchive::createJsonHeader( const std::string &sPath, std::string &sHead
 			ifsFile.close();
 
 			sHeader += '"';
-			sHeader += file->d_name;
+			sHeader += e;
 			sHeader += "\":{\"size\":" + std::to_string(szFile) + ",\"offset\":\"" + std::to_string(m_szOffset) + "\"}";
 			m_szOffset += szFile;
-			vFileList.push_back( sLocalPath );
+
+			vFileList.push_back( {sLocalPath, szFile} );
 		}
 
 		if ( ++uFileNum < uFolderSize )
@@ -129,18 +136,21 @@ void asarArchive::unpackFiles( rapidjson::Value& object, const std::string &sPat
 					continue;
 				}
 
-				char fileBuf[BUFF_SIZE];
-				m_ifsInputFile.seekg(m_headerSize + uOffset);
+				if (uSize > 0) {
+					char fileBuf[BUFF_SIZE];
+					m_ifsInputFile.seekg(m_headerSize + uOffset);
 
-				// don't read the entire file into buffer (in case its size is enormous)
-				while (uSize > sizeof(fileBuf)) {
-					m_ifsInputFile.read(fileBuf, sizeof(fileBuf));
-					ofsOutputFile.write(fileBuf, sizeof(fileBuf));
-					uSize -= sizeof(fileBuf);
+					// don't read the entire file into buffer (in case its size is enormous)
+					while (uSize > BUFF_SIZE) {
+						m_ifsInputFile.read(fileBuf, BUFF_SIZE);
+						ofsOutputFile.write(fileBuf, BUFF_SIZE);
+						uSize -= BUFF_SIZE;
+					}
+
+					m_ifsInputFile.read(fileBuf, uSize);
+					ofsOutputFile.write(fileBuf, uSize);
 				}
 
-				m_ifsInputFile.read(fileBuf, uSize);
-				ofsOutputFile.write(fileBuf, uSize);
 				ofsOutputFile.close();
 			}
 		}
@@ -185,7 +195,7 @@ bool asarArchive::unpack( const std::string &sArchivePath, std::string sExtractP
 
 // Pack archive
 bool asarArchive::pack( const std::string &sFinalName, const std::string &sPath ) {
-	std::vector<std::string> vFileList;
+	std::vector< std::pair<std::string, size_t> > vFileList;
 	std::string sHeader = "{\"files\":{";
 
 	if ( !createJsonHeader( sPath, sHeader, vFileList ) )
@@ -224,28 +234,41 @@ bool asarArchive::pack( const std::string &sFinalName, const std::string &sPath 
 	ofsOutputFile.write( cHeader, 16 );
 	ofsOutputFile << sHeader;
 
+	char fileBuf[BUFF_SIZE];
+
 	for (const auto &e : vFileList) {
-		std::ifstream ifsFile( e, std::ios::binary | std::ios::ate );
+		std::ifstream ifsFile( e.first, std::ios::binary | std::ios::ate );
 
 		if ( !ifsFile.is_open() ) {
-			std::cerr << "cannot open file for reading: " << e << std::endl;
+			std::cerr << "cannot open file for reading: " << e.first << std::endl;
 			ofsOutputFile.close();
 			return false;
 		}
 
-		char fileBuf[BUFF_SIZE];
 		size_t szFile = ifsFile.tellg();
-		ifsFile.seekg(0, std::ios::beg);
 
-		// don't read the entire file into buffer (in case its size is enormous)
-		while (szFile > sizeof(fileBuf)) {
-			ifsFile.read(fileBuf, sizeof(fileBuf));
-			ofsOutputFile.write(fileBuf, sizeof(fileBuf));
-			szFile -= sizeof(fileBuf);
+		if (szFile != e.second) {
+			std::cerr << "file size doesn't match: " << e.first << ": " << e.second
+				<< " -> " << szFile << " was expected" << std::endl;
+			ifsFile.close();
+			ofsOutputFile.close();
+			return false;
 		}
 
-		ifsFile.read(fileBuf, szFile);
-		ofsOutputFile.write(fileBuf, szFile);
+		if (szFile > 0) {
+			ifsFile.seekg(0, std::ios::beg);
+
+			// don't read the entire file into buffer (in case its size is enormous)
+			while (szFile > BUFF_SIZE) {
+				ifsFile.read(fileBuf, BUFF_SIZE);
+				ofsOutputFile.write(fileBuf, BUFF_SIZE);
+				szFile -= BUFF_SIZE;
+			}
+
+			ifsFile.read(fileBuf, szFile);
+			ofsOutputFile.write(fileBuf, szFile);
+		}
+
 		ifsFile.close();
 	}
 

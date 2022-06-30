@@ -5,6 +5,7 @@
 #include <dirent.h>
 #include <string>
 #include <fstream>
+#include <utility>
 #include <vector>
 
 
@@ -16,7 +17,7 @@ private:
 	size_t m_szOffset = 0;
 	bool m_extract = true;
 	void unpackFiles( rapidjson::Value& object, const std::string &sPath );
-	bool createJsonHeader( const std::string &sPath, std::string &sHeader, std::vector<std::string> &vFileList );
+	bool createJsonHeader( const std::string &sPath, std::string &sHeader, std::vector< std::pair<std::string, size_t> > &vFileList );
 	size_t numSubfile( DIR* dir );
 
 public:
