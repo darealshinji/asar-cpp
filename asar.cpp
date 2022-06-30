@@ -22,6 +22,8 @@
 
 #endif // _WIN32
 
+#define BUFF_SIZE (32*1024)
+
 
 
 // Return number of files in a folder
@@ -42,7 +44,7 @@ size_t asarArchive::numSubfile( DIR* dir ) {
 bool asarArchive::createJsonHeader( const std::string &sPath, std::string &sHeader, std::vector<std::string> &vFileList ) {
 	DIR* dir = opendir( sPath.c_str() );
 	if ( !dir ) {
-		perror("opendir()");
+		perror(sPath.c_str());
 		return false;
 	}
 
@@ -120,17 +122,25 @@ void asarArchive::unpackFiles( rapidjson::Value& object, const std::string &sPat
 
 				size_t uSize = vMember["size"].GetUint();
 				int uOffset = std::stoi( vMember["offset"].GetString() );
-
-				char fileBuf[uSize];
-				m_ifsInputFile.seekg(m_headerSize + uOffset);
-				m_ifsInputFile.read(fileBuf, uSize);
 				std::ofstream ofsOutputFile( sFilePath, std::ios::trunc | std::ios::binary );
 
 				if ( !ofsOutputFile ) {
 					std::cerr << "Error when writing to file " << sFilePath << std::endl;
 					continue;
 				}
-				ofsOutputFile.write( fileBuf, uSize );
+
+				char fileBuf[BUFF_SIZE];
+				m_ifsInputFile.seekg(m_headerSize + uOffset);
+
+				// don't read the entire file into buffer (in case its size is enormous)
+				while (uSize > sizeof(fileBuf)) {
+					m_ifsInputFile.read(fileBuf, sizeof(fileBuf));
+					ofsOutputFile.write(fileBuf, sizeof(fileBuf));
+					uSize -= sizeof(fileBuf);
+				}
+
+				m_ifsInputFile.read(fileBuf, uSize);
+				ofsOutputFile.write(fileBuf, uSize);
 				ofsOutputFile.close();
 			}
 		}
@@ -223,12 +233,19 @@ bool asarArchive::pack( const std::string &sFinalName, const std::string &sPath 
 			return false;
 		}
 
+		char fileBuf[BUFF_SIZE];
 		size_t szFile = ifsFile.tellg();
 		ifsFile.seekg(0, std::ios::beg);
 
-		for (size_t i=0; i < szFile; ++i)
-			ofsOutputFile.put(ifsFile.get());
+		// don't read the entire file into buffer (in case its size is enormous)
+		while (szFile > sizeof(fileBuf)) {
+			ifsFile.read(fileBuf, sizeof(fileBuf));
+			ofsOutputFile.write(fileBuf, sizeof(fileBuf));
+			szFile -= sizeof(fileBuf);
+		}
 
+		ifsFile.read(fileBuf, szFile);
+		ofsOutputFile.write(fileBuf, szFile);
 		ifsFile.close();
 	}
 
