@@ -11,11 +11,16 @@
 #include "asar.h"
 
 #ifdef _WIN32
-#define DIR_SEPARATOR '\\'
+# include <direct.h>
+// assuming Little Endian for Windows
+# define htole32(x) x
+# define le32toh(x) x
+# define DIR_SEPARATOR '\\'
 #else
-#include <sys/stat.h>
-#define _mkdir(a) mkdir(a,0777)
-#define DIR_SEPARATOR '/'
+# include <endian.h>
+# include <sys/stat.h>
+# define _mkdir(a) mkdir(a,0777)
+# define DIR_SEPARATOR '/'
 #endif // _WIN32
 
 #define BUFF_SIZE (512*1024)
@@ -152,20 +157,44 @@ bool asarArchive::unpack( const std::string &sArchivePath, std::string sExtractP
 		return false;
 	}
 
-	char sizeBuf[8];
-	m_ifsInputFile.read( sizeBuf, 8 );
-	uint32_t uSize = *(uint32_t*)(sizeBuf + 4) - 8;
+	// first 16 bytes consist of 4 numbers stored as uint32_t little endian:
+	// uHdr1 = 4
+	// uHdr2 = <JSON header size> + 8
+	// uHdr3 = <JSON header size> + 4
+	// uSize = <JSON header size>
+	char sizeBuf[16];
 
+	if ( !m_ifsInputFile.read( sizeBuf, 16 ) ) {
+		std::cerr << "unexpected file header size" << std::endl;
+		m_ifsInputFile.close();
+		return false;
+	}
+
+	const uint32_t uHdr1 = le32toh( *(reinterpret_cast<uint32_t*>(sizeBuf)) );
+	const uint32_t uHdr2 = le32toh( *(reinterpret_cast<uint32_t*>(sizeBuf + 4)) );
+	const uint32_t uHdr3 = le32toh( *(reinterpret_cast<uint32_t*>(sizeBuf + 8)) );
+	const uint32_t uSize = le32toh( *(reinterpret_cast<uint32_t*>(sizeBuf + 12)) );
+
+	if ( uHdr1 != 4 || uHdr2 != (uSize + 8) || uHdr3 != (uSize + 4) ) {
+		std::cerr << "unexpected file header data" << std::endl;
+		m_ifsInputFile.close();
+		return false;
+	}
+
+	char headerBuf[uSize + 1] = {0}; // initialize with zeros
 	m_headerSize = uSize + 16;
-	char headerBuf[uSize + 1];
-	m_ifsInputFile.seekg(16); // skip header
-	m_ifsInputFile.read(headerBuf, uSize);
-	headerBuf[uSize] = 0; // append nul byte to end
+
+	if (!m_ifsInputFile.read(headerBuf, uSize)) {
+		std::cerr << "JSON header data too short" << std::endl;
+		m_ifsInputFile.close();
+		return false;
+	}
 
 	rapidjson::Document json;
 	rapidjson::ParseResult res = json.Parse( headerBuf );
 	if ( !res ) {
 		std::cout << rapidjson::GetParseError_En(res.Code()) << std::endl;
+		m_ifsInputFile.close();
 		return false;
 	}
 
@@ -204,22 +233,22 @@ bool asarArchive::pack( const std::string &sPath, const std::string &sFinalName 
 	char *p = cHeader;
 
 	// offset 0x00
-	uint32_t uSize = 4;
+	uint32_t uSize = htole32(4);
 	memcpy( p, &uSize, 4 );
 	p = cHeader + 4;
 
 	// offset 0x04
-	uSize = sHeader.size() + 8;
+	uSize = htole32( sHeader.size() + 8 );
 	memcpy( p, &uSize, 4 );
 	p += 4;
 
 	// offset 0x08
-	uSize -= 4;
+	uSize = htole32( sHeader.size() + 4 );
 	memcpy( p, &uSize, 4 );
 	p += 4;
 
 	// offset 0x0C
-	uSize -= 4;
+	uSize = htole32( sHeader.size() );
 	memcpy( p, &uSize, 4 );
 
 	ofsOutputFile.write( cHeader, 16 );
@@ -239,7 +268,7 @@ bool asarArchive::pack( const std::string &sPath, const std::string &sFinalName 
 		size_t szFile = ifsFile.tellg();
 
 		if (szFile != e.second) {
-			std::cerr << "file size doesn't match: " << e.first << ": " << e.second
+			std::cerr << "file size does not match: " << e.first << ": " << e.second
 				<< " -> " << szFile << " was expected" << std::endl;
 			ifsFile.close();
 			ofsOutputFile.close();
