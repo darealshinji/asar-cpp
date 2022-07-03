@@ -1,5 +1,5 @@
 CXX := g++
-CXXFLAGS := -Wall -O3 -Iinclude
+CXXFLAGS := -Wall -O3 -Irapidjson/include
 
 
 all: asar
