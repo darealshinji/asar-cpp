@@ -4,20 +4,27 @@
 #include <rapidjson/document.h>
 #include <string>
 #include <fstream>
-#include <utility>
 #include <vector>
 
 
 class asarArchive {
 
 private:
+	typedef struct {
+		std::string path;
+		size_t size;
+#ifndef _WIN32
+		char type;
+		std::string link_target;
+#endif
+	} fileEntry_t;
+
 	std::ifstream m_ifsInputFile;
 	size_t m_headerSize = 0;
 	size_t m_szOffset = 0;
 	bool m_extract = true;
 	bool unpackFiles( rapidjson::Value& object, const std::string &sPath, const std::string &sExtractFile = "" );
-	bool createJsonHeader( const std::string &sPath, std::string &sHeader,
-		std::vector< std::pair<std::string, size_t> > &vFileList );
+	bool createJsonHeader( const std::string &sPath, std::string &sHeader, std::vector<fileEntry_t> &vFileList );
 
 public:
 	bool unpack( const std::string &sArchivePath, std::string sExtractPath, const std::string &sFilePath = "" );
