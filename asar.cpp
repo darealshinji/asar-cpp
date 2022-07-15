@@ -73,7 +73,7 @@ bool asarArchive::createJsonHeader( const std::string &sPath, std::string &sHead
 
 			sHeader += '"';
 			sHeader += e;
-			entry.path = e;
+			entry.path = sLocalPath;
 			entry.size = szFile;
 
 			sHeader += "\":{\"size\":" + std::to_string(szFile) + ",\"offset\":\"" + std::to_string(m_szOffset) + "\"}";
@@ -86,7 +86,7 @@ bool asarArchive::createJsonHeader( const std::string &sPath, std::string &sHead
 				return false;
 			}
 
-			entry.path = e;
+			entry.path = sLocalPath;
 			entry.link_target = {};
 			sHeader += '"';
 			sHeader += e;
@@ -166,8 +166,8 @@ bool asarArchive::unpackFiles( rapidjson::Value& object, const std::string &sPat
 
 			if (is_link) {
 #ifdef _WIN32
-				// symbolic links (not .lnk files!) on Windows/NTFS are different from Unix,
-				// so instead we create an empty Text file
+				// symbolic links (not .lnk files!) on Windows/NTFS are used differently
+				// from Unix, so instead we create a text file with the link target
 				std::ofstream ofsOutputFile( pPath, std::ios::trunc );
 				if ( !ofsOutputFile ) {
 					std::cerr << "Error when writing to file " << sFilePath << std::endl;
@@ -254,12 +254,13 @@ bool asarArchive::unpack( const std::string &sArchivePath, std::string sExtractP
 		return false;
 	}
 
-	char headerBuf[uSize + 1] = {0}; // initialize with zeros
+	char *headerBuf = new char[uSize + 1](); // initialize with zeros
 	m_headerSize = uSize + 16;
 
 	if (!m_ifsInputFile.read(headerBuf, uSize)) {
 		std::cerr << "JSON header data too short" << std::endl;
 		m_ifsInputFile.close();
+		delete headerBuf;
 		return false;
 	}
 
@@ -268,6 +269,7 @@ bool asarArchive::unpack( const std::string &sArchivePath, std::string sExtractP
 	if ( !res ) {
 		std::cout << rapidjson::GetParseError_En(res.Code()) << std::endl;
 		m_ifsInputFile.close();
+		delete headerBuf;
 		return false;
 	}
 
@@ -282,6 +284,7 @@ bool asarArchive::unpack( const std::string &sArchivePath, std::string sExtractP
 	m_extract = true;
 
 	m_ifsInputFile.close();
+	delete headerBuf;
 
 	return ret;
 }
@@ -332,7 +335,7 @@ bool asarArchive::pack( const std::string &sPath, const std::string &sFinalName 
 	for (const auto &e : vFileList) {
 		if (e.type == 'L') continue;  // link
 
-		std::ifstream ifsFile( e.path, std::ios::binary | std::ios::ate );
+		std::ifstream ifsFile( e.path, std::ios::binary /*|std::ios::ate*/ );
 
 		if ( !ifsFile.is_open() ) {
 			std::cerr << "cannot open file for reading: " << e.path << std::endl;
@@ -353,7 +356,7 @@ bool asarArchive::pack( const std::string &sPath, const std::string &sFinalName 
 		size_t szFile = e.size;
 
 		if (szFile > 0) {
-			ifsFile.seekg(0, std::ios::beg);
+			//ifsFile.seekg(0, std::ios::beg);
 
 			while (szFile > BUFF_SIZE) {
 				ifsFile.read(fileBuf, BUFF_SIZE);

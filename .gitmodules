@@ -1,3 +1,6 @@
 [submodule "rapidjson"]
 	path = rapidjson
 	url = https://github.com/Tencent/rapidjson
+[submodule "dirent"]
+	path = dirent
+	url = https://github.com/tronkko/dirent

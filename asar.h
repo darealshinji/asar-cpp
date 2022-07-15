@@ -13,10 +13,8 @@ private:
 	typedef struct {
 		std::string path;
 		size_t size;
-#ifndef _WIN32
 		char type;
 		std::string link_target;
-#endif
 	} fileEntry_t;
 
 	std::ifstream m_ifsInputFile;

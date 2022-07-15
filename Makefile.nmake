@@ -1,0 +1,20 @@
+cflags = /O2 /EHs /Irapidjson/include
+
+# use MSVC compatible implementation of dirent.h
+# to avoid two different APIs in the source
+cflags = $(cflags) /Idirent/include
+
+
+all: asar.exe
+
+clean:
+	-del /q asar.exe
+	-del /q asar.obj
+	-del /q main.obj
+
+.cpp.obj:
+  cl /nologo $(cdebug) $(cflags) $(cvars) /c $*.cpp
+
+asar.exe: main.obj asar.obj
+	link /nologo /out:asar.exe main.obj asar.obj
+
