@@ -61,7 +61,7 @@ bool asarArchive::createJsonHeader( const std::string &sPath, std::string &sHead
 		} else {
 			fileEntry_t entry;
 #ifdef _WIN32
-			HANDLE hFile = CreateFile(sLocalPath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, NULL, NULL); 
+			HANDLE hFile = CreateFile(sLocalPath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, NULL, NULL);
 			if ( hFile == INVALID_HANDLE_VALUE ) {
 				std::cerr << "cannot open file for reading: " << sLocalPath << std::endl;
 				closedir(dir);
@@ -322,7 +322,13 @@ bool asarArchive::unpack( const std::string &sArchivePath, std::string sOutPath,
 
 	if (ret) {
 		if ( sOutPath.empty() && sExtractFile.empty() ) {
-			// print file list (use std::sort()?)
+			// sort file list
+			auto lambda = [](const fileEntry_t &a, const fileEntry_t &b) {
+				return strcmp(a.path.c_str(), b.path.c_str()) < 0;
+			};
+			std::sort( vFileList.begin(), vFileList.end(), lambda );
+
+			// print file list
 			for ( const auto &e : vFileList )
 				std::cout << e.path << std::endl;
 		} else {
