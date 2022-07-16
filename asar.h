@@ -13,19 +13,21 @@ private:
 	typedef struct {
 		std::string path;
 		size_t size;
-		char type;
+		size_t offset;
+		char type;  // 'F' regular file, 'L' symbolic link, 'X' executable file
 		std::string link_target;
 	} fileEntry_t;
 
 	std::ifstream m_ifsInputFile;
 	size_t m_headerSize = 0;
-	size_t m_szOffset = 0;
-	bool m_extract = true;
-	bool unpackFiles( rapidjson::Value& object, const std::string &sPath, const std::string &sExtractFile = "" );
-	bool createJsonHeader( const std::string &sPath, std::string &sHeader, std::vector<fileEntry_t> &vFileList );
+
+	bool getFiles( rapidjson::Value& object, std::vector<fileEntry_t> &vFileList, const std::string &sPath );
+	bool unpackFiles( const std::vector<fileEntry_t> &vFileList );
+	bool unpackSingleFile( const fileEntry_t &file, const std::string &sOutPath );
+	bool createJsonHeader( const std::string &sPath, std::string &sHeader, size_t &szOffset, std::vector<fileEntry_t> &vFileList );
 
 public:
-	bool unpack( const std::string &sArchivePath, std::string sExtractPath, const std::string &sFilePath = "" );
+	bool unpack( const std::string &sArchivePath, std::string sOutPath, std::string sExtractFile = "" );
 	bool pack( const std::string &sPath, const std::string &sFinalName );
 	bool list( const std::string &sArchivePath );
 

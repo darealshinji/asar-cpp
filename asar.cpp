@@ -26,7 +26,7 @@
 #define BUFF_SIZE (512*1024)
 
 
-bool asarArchive::createJsonHeader( const std::string &sPath, std::string &sHeader, std::vector<fileEntry_t> &vFileList ) {
+bool asarArchive::createJsonHeader( const std::string &sPath, std::string &sHeader, size_t &szOffset, std::vector<fileEntry_t> &vFileList ) {
 	DIR* dir = opendir( sPath.c_str() );
 	if ( !dir ) {
 		perror(sPath.c_str());
@@ -56,28 +56,35 @@ bool asarArchive::createJsonHeader( const std::string &sPath, std::string &sHead
 			sHeader += e;
 			sHeader += "\":{\"files\":{";
 			closedir( isDir );
-			createJsonHeader( sLocalPath, sHeader, vFileList );
+			createJsonHeader( sLocalPath, sHeader, szOffset, vFileList );
 			sHeader += "}}";
 		} else {
 			fileEntry_t entry;
 #ifdef _WIN32
-			std::ifstream ifsFile( sLocalPath, std::ios::binary | std::ios::ate );
-			if ( !ifsFile.is_open() ) {
+			HANDLE hFile = CreateFile(sLocalPath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, NULL, NULL); 
+			if ( hFile == INVALID_HANDLE_VALUE ) {
 				std::cerr << "cannot open file for reading: " << sLocalPath << std::endl;
 				closedir(dir);
 				return false;
 			}
 
-			size_t szFile = ifsFile.tellg();
-			ifsFile.close();
+			LARGE_INTEGER lFileSize;
+			BOOL ret = GetFileSizeEx(hFile, &lFileSize);
+			CloseHandle(hFile);
+
+			if ( ret == FALSE ) {
+				std::cerr << "cannot retrieve file size: " << sLocalPath << std::endl;
+				closedir(dir);
+				return false;
+			}
 
 			sHeader += '"';
 			sHeader += e;
 			entry.path = sLocalPath;
-			entry.size = szFile;
+			entry.size = lFileSize.QuadPart;
 
-			sHeader += "\":{\"size\":" + std::to_string(szFile) + ",\"offset\":\"" + std::to_string(m_szOffset) + "\"}";
-			m_szOffset += szFile;
+			sHeader += "\":{\"size\":" + std::to_string(entry.size) + ",\"offset\":\"" + std::to_string(szOffset) + "\"}";
+			szOffset += entry.size;
 #else
 			struct stat st;
 			if ( lstat( sLocalPath.c_str(), &st ) == -1) {
@@ -103,7 +110,7 @@ bool asarArchive::createJsonHeader( const std::string &sPath, std::string &sHead
 				entry.size = 0;
 				entry.type = 'L';
 			} else {
-				sHeader += "\":{\"size\":" + std::to_string(st.st_size) + ",\"offset\":\"" + std::to_string(m_szOffset);
+				sHeader += "\":{\"size\":" + std::to_string(st.st_size) + ",\"offset\":\"" + std::to_string(szOffset);
 				if ( st.st_mode & S_IXUSR ) {
 					sHeader += "\",\"executable\":true}";
 					entry.type = 'X';
@@ -111,7 +118,7 @@ bool asarArchive::createJsonHeader( const std::string &sPath, std::string &sHead
 					sHeader += "\"}";
 					entry.type = 'F';
 				}
-				m_szOffset += st.st_size;
+				szOffset += st.st_size;
 				entry.size = st.st_size;
 			}
 #endif  // !_WIN32
@@ -127,103 +134,131 @@ bool asarArchive::createJsonHeader( const std::string &sPath, std::string &sHead
 	return true;
 }
 
-bool asarArchive::unpackFiles( rapidjson::Value& object, const std::string &sPath, const std::string &sExtractFile ) {
+bool asarArchive::getFiles( rapidjson::Value& object, std::vector<fileEntry_t> &vFileList, const std::string &sPath ) {
 	if ( !object.IsObject() ) // how ?
 		return false;
-
-	if ( m_extract && !sPath.empty() )
-		_mkdir( sPath.c_str() );
 
 	for ( auto itr = object.MemberBegin(); itr != object.MemberEnd(); ++itr ) {
 		rapidjson::Value& vMember = itr->value;
 		if ( !vMember.IsObject() ) continue;
 
 		std::string sFilePath = sPath + itr->name.GetString();
-		const char *pPath = sFilePath.c_str();
-		if ( !sExtractFile.empty() ) pPath += sPath.size();
 
 		if ( vMember.HasMember("files") ) {
-			if ( m_extract && sExtractFile.empty() )
-				_mkdir( sFilePath.c_str() );
-
-			unpackFiles( vMember["files"], sFilePath + DIR_SEPARATOR, sExtractFile );
+			getFiles( vMember["files"], vFileList, sFilePath + DIR_SEPARATOR );
 		} else {
-			bool is_link = vMember.HasMember("link");
-			if ( !( is_link && vMember["link"].IsString() ) &&
-					 !( vMember.HasMember("size") && vMember.HasMember("offset") && vMember["size"].IsInt() && vMember["offset"].IsString() ) )
-				continue;
+			fileEntry_t file;
 
-			if ( !sExtractFile.empty() && sExtractFile != sFilePath )
-				continue; // not the file we want to extract -> continue
-
-			if ( sExtractFile.empty() && !m_extract ) {
-				std::cout << sFilePath << std::endl;
+			if ( vMember.HasMember("link") && vMember["link"].IsString() ) {
+				file.path = sFilePath;
+				file.size = 0;
+				file.offset = 0;
+				file.type = 'L';
+				file.link_target = vMember["link"].GetString();
 				continue;
 			}
 
-			rmdir(sFilePath.c_str());  // in case the path exists and is a directory (must be empty)
-			unlink(sFilePath.c_str());  // don't accidentally write into a link target
+			if ( !( vMember.HasMember("size") && vMember.HasMember("offset") &&
+					vMember["size"].IsInt() && vMember["offset"].IsString() ) )
+				continue;
 
-			if (is_link) {
-#ifdef _WIN32
-				// symbolic links (not .lnk files!) on Windows/NTFS are used differently
-				// from Unix, so instead we create a text file with the link target
-				std::ofstream ofsOutputFile( pPath, std::ios::trunc );
-				if ( !ofsOutputFile ) {
-					std::cerr << "Error when writing to file " << sFilePath << std::endl;
-					return false;
-				}
-				ofsOutputFile << vMember["link"].GetString();
-				ofsOutputFile.close();
-#else
-				if ( symlink(vMember["link"].GetString(), sFilePath.c_str()) != 0 ) {
-					perror("symlink()");
-					return false;
-				}
-#endif
-				return true;
-			}
-
-			size_t uSize = vMember["size"].GetUint();
-			int uOffset = std::stoi( vMember["offset"].GetString() );
-			std::ofstream ofsOutputFile( pPath, std::ios::trunc | std::ios::binary );
-
-			if ( !ofsOutputFile ) {
-				std::cerr << "Error when writing to file " << sFilePath << std::endl;
-				return false;
-			}
-
-			if (uSize > 0) {
-				char fileBuf[BUFF_SIZE];
-				m_ifsInputFile.seekg(m_headerSize + uOffset);
-
-				while (uSize > BUFF_SIZE) {
-					m_ifsInputFile.read(fileBuf, BUFF_SIZE);
-					ofsOutputFile.write(fileBuf, BUFF_SIZE);
-					uSize -= BUFF_SIZE;
-				}
-
-				m_ifsInputFile.read(fileBuf, uSize);
-				ofsOutputFile.write(fileBuf, uSize);
-			}
-
-			ofsOutputFile.close();
+			file.path = sFilePath;
+			file.size = vMember["size"].GetUint();
+			file.offset = std::stoi( vMember["offset"].GetString() );
+			file.type = 'F';
 
 #ifndef _WIN32
-			if (vMember.HasMember("executable") && vMember["executable"].IsBool() && vMember["executable"].GetBool() == true)
-				chmod(sFilePath.c_str(), 0775); //S_IRWXU|S_IRWXG|S_IROTH|S_IXOTH);
+			if (vMember.HasMember("executable") && vMember["executable"].IsBool() &&
+				vMember["executable"].GetBool() == true)
+				file.type = 'X';
 #endif
 
-			if (!sExtractFile.empty())
-				return true;
+			vFileList.push_back( file );
 		}
 	}
 
 	return true;
 }
 
+bool asarArchive::unpackFiles( const std::vector<fileEntry_t> &vFileList ) {
+	for ( const auto &file : vFileList ) {
+		rmdir(file.path.c_str());  // in case the path exists and is a directory (must be empty)
+		unlink(file.path.c_str());  // don't accidentally write into a link target
+
+		char *copy = strdup(file.path.c_str());
+		char *p = copy;
+
+		while (*p++) {
+			if (*p == DIR_SEPARATOR) {
+				*p = 0;
+				_mkdir(copy);
+				*p = DIR_SEPARATOR;
+			}
+		}
+		free(copy);
+
+		if ( !unpackSingleFile(file, file.path) )
+			return false;
+	}
+	return true;
+}
+
+bool asarArchive::unpackSingleFile( const fileEntry_t &file, const std::string &sOutPath ) {
+	if (file.type == 'L') {
+#ifdef _WIN32
+		// symbolic links (not .lnk files!) on Windows/NTFS are used differently
+		// from Unix, so instead we create a text file with the link target
+		std::ofstream ofsOutputFile( sOutPath.c_str(), std::ios::trunc );
+
+		if ( !ofsOutputFile ) {
+			std::cerr << "Error when writing to file " << sOutPath << std::endl;
+			return false;
+		}
+		ofsOutputFile << file.link_target;
+		ofsOutputFile.close();
+#else
+		if ( symlink( file.link_target.c_str(), sOutPath.c_str() ) != 0 ) {
+			perror("symlink()");
+			return false;
+		}
+#endif
+		return true;
+	}
+
+	std::ofstream ofsOutputFile( sOutPath.c_str(), std::ios::trunc | std::ios::binary );
+
+	if ( !ofsOutputFile ) {
+		std::cerr << "Error when writing to file " << sOutPath << std::endl;
+		return false;
+	}
+
+	if (file.size > 0) {
+		char fileBuf[BUFF_SIZE];
+		size_t uSize = file.size;
+		m_ifsInputFile.seekg(m_headerSize + file.offset);
+
+		while (uSize > BUFF_SIZE) {
+			m_ifsInputFile.read(fileBuf, BUFF_SIZE);
+			ofsOutputFile.write(fileBuf, BUFF_SIZE);
+			uSize -= BUFF_SIZE;
+		}
+
+		m_ifsInputFile.read(fileBuf, uSize);
+		ofsOutputFile.write(fileBuf, uSize);
+	}
+
+	ofsOutputFile.close();
+
+#ifndef _WIN32
+	if (file.type == 'X')
+		chmod(sOutPath.c_str(), 0775);
+#endif
+
+	return true;
+}
+
 // Unpack archive to a specific location
-bool asarArchive::unpack( const std::string &sArchivePath, std::string sExtractPath, const std::string &sFilePath ) {
+bool asarArchive::unpack( const std::string &sArchivePath, std::string sOutPath, std::string sExtractFile ) {
 	m_ifsInputFile.open( sArchivePath, std::ios::binary );
 	if ( !m_ifsInputFile ) {
 		std::cerr << "cannot open file: " << sArchivePath << std::endl;
@@ -265,26 +300,53 @@ bool asarArchive::unpack( const std::string &sArchivePath, std::string sExtractP
 	}
 
 	rapidjson::Document json;
-	rapidjson::ParseResult res = json.Parse( headerBuf );
+	rapidjson::ParseResult res = json.Parse(headerBuf);
+	delete headerBuf;
+
 	if ( !res ) {
 		std::cout << rapidjson::GetParseError_En(res.Code()) << std::endl;
 		m_ifsInputFile.close();
-		delete headerBuf;
 		return false;
 	}
 
-	if ( !sExtractPath.empty() && sExtractPath.back() != DIR_SEPARATOR )
-		sExtractPath.push_back(DIR_SEPARATOR);
+	if ( !sOutPath.empty() ) {
+		if ( sOutPath.back() != DIR_SEPARATOR )
+			sOutPath.push_back( DIR_SEPARATOR );
 
-	if ( !sFilePath.empty() )
-		m_extract = false;
+		if ( !sExtractFile.empty() )
+			sExtractFile.insert(0, sOutPath);
+	}
 
-	bool ret = unpackFiles( json["files"], sExtractPath, sFilePath );
-	m_szOffset = 0;
-	m_extract = true;
+	std::vector<fileEntry_t> vFileList;
+	bool ret = getFiles( json["files"], vFileList, sOutPath );
+
+	if (ret) {
+		if ( sOutPath.empty() && sExtractFile.empty() ) {
+			// print file list (use std::sort()?)
+			for ( const auto &e : vFileList )
+				std::cout << e.path << std::endl;
+		} else {
+			if ( !sExtractFile.empty() ) {
+				// extract single file
+				for ( const auto &e : vFileList ) {
+					if (e.path == sExtractFile) {
+						// basename
+						size_t pos = sExtractFile.find_last_of(DIR_SEPARATOR);
+						if ( pos != std::string::npos )
+							sExtractFile.erase(0, pos+1);
+
+						ret = unpackSingleFile( e, sExtractFile );
+						break;
+					}
+				}
+			} else {
+				// extract all files
+				ret = unpackFiles( vFileList );
+			}
+		}
+	}
 
 	m_ifsInputFile.close();
-	delete headerBuf;
 
 	return ret;
 }
@@ -293,8 +355,9 @@ bool asarArchive::unpack( const std::string &sArchivePath, std::string sExtractP
 bool asarArchive::pack( const std::string &sPath, const std::string &sFinalName ) {
 	std::vector<fileEntry_t> vFileList;
 	std::string sHeader = "{\"files\":{";
+	size_t szOffset = 0;
 
-	if ( !createJsonHeader( sPath, sHeader, vFileList ) )
+	if ( !createJsonHeader( sPath, sHeader, szOffset, vFileList ) )
 		return false;
 
 	sHeader += "}}";
@@ -333,9 +396,9 @@ bool asarArchive::pack( const std::string &sPath, const std::string &sFinalName 
 	char fileBuf[BUFF_SIZE];
 
 	for (const auto &e : vFileList) {
-		if (e.type == 'L') continue;  // link
+		if (e.type == 'L') continue;  // skip symbolic link
 
-		std::ifstream ifsFile( e.path, std::ios::binary /*|std::ios::ate*/ );
+		std::ifstream ifsFile( e.path, std::ios::binary );
 
 		if ( !ifsFile.is_open() ) {
 			std::cerr << "cannot open file for reading: " << e.path << std::endl;
@@ -343,21 +406,9 @@ bool asarArchive::pack( const std::string &sPath, const std::string &sFinalName 
 			return false;
 		}
 
-/*
-		size_t szFile = ifsFile.tellg();
-		if (szFile != e.size) {
-			std::cerr << "file size does not match: " << e.path << ": " << e.size
-				<< " -> " << szFile << " was expected" << std::endl;
-			ifsFile.close();
-			ofsOutputFile.close();
-			return false;
-		}
-*/
 		size_t szFile = e.size;
 
 		if (szFile > 0) {
-			//ifsFile.seekg(0, std::ios::beg);
-
 			while (szFile > BUFF_SIZE) {
 				ifsFile.read(fileBuf, BUFF_SIZE);
 				ofsOutputFile.write(fileBuf, BUFF_SIZE);
@@ -378,8 +429,5 @@ bool asarArchive::pack( const std::string &sPath, const std::string &sFinalName 
 
 // List archive content
 bool asarArchive::list( const std::string &sArchivePath ) {
-	m_extract = false;
-	bool ret = unpack( sArchivePath, "" );
-	m_extract = true;
-	return ret;
+	return unpack( sArchivePath, "", "" );
 }
