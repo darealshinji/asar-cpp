@@ -360,12 +360,12 @@ bool asarArchive::unpack( const std::string &sArchivePath, std::string sOutPath,
 			struct dirent *ent;
 			int i = 0;
 			while ( (ent = readdir(dir)) ) i++;
+			closedir(dir);
 			if (i > 2) {
 				std::cerr << "directory is not empty: " << sOutPath << std::endl;
 				m_ifsInputFile.close();
 				return false;
 			}
-			closedir(dir);
 		}
 
 		ret = unpackFiles( vFileList );
