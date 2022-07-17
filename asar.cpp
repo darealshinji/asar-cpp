@@ -52,9 +52,7 @@ bool asarArchive::createJsonHeader( const std::string &sPath, std::string &sHead
 		DIR* isDir = opendir( sLocalPath.c_str() );
 
 		if ( isDir ) {
-			sHeader += '"';
-			sHeader += e;
-			sHeader += "\":{\"files\":{";
+			sHeader += "\"" + e + "\":{\"files\":{";
 			closedir( isDir );
 			createJsonHeader( sLocalPath, sHeader, szOffset, vFileList );
 			sHeader += "}}";
@@ -78,12 +76,9 @@ bool asarArchive::createJsonHeader( const std::string &sPath, std::string &sHead
 				return false;
 			}
 
-			sHeader += '"';
-			sHeader += e;
 			entry.path = sLocalPath;
 			entry.size = lFileSize.QuadPart;
-
-			sHeader += "\":{\"size\":" + std::to_string(entry.size) + ",\"offset\":\"" + std::to_string(szOffset) + "\"}";
+			sHeader += "\"" + e + "\":{\"size\":" + std::to_string(entry.size) + ",\"offset\":\"" + std::to_string(szOffset) + "\"}";
 			szOffset += entry.size;
 #else
 			struct stat st;
@@ -94,9 +89,7 @@ bool asarArchive::createJsonHeader( const std::string &sPath, std::string &sHead
 			}
 
 			entry.path = sLocalPath;
-			entry.link_target = {};
-			sHeader += '"';
-			sHeader += e;
+			sHeader += "\"" + e;
 
 			if (S_ISLNK(st.st_mode)) {
 				char buf[4096];
@@ -182,12 +175,13 @@ bool asarArchive::getFiles( rapidjson::Value& object, std::vector<fileEntry_t> &
 
 bool asarArchive::unpackFiles( const std::vector<fileEntry_t> &vFileList ) {
 	for ( const auto &file : vFileList ) {
-		rmdir(file.path.c_str());  // in case the path exists and is a directory (must be empty)
-		unlink(file.path.c_str());  // don't accidentally write into a link target
+		//rmdir(file.path.c_str());  // in case the path exists and is a directory (must be empty)
+		//unlink(file.path.c_str());  // don't accidentally write into a link target
 
 		char *copy = strdup(file.path.c_str());
 		char *p = copy;
 
+		// like "mkdir -p"
 		while (*p++) {
 			if (*p == DIR_SEPARATOR) {
 				*p = 0;
@@ -320,36 +314,61 @@ bool asarArchive::unpack( const std::string &sArchivePath, std::string sOutPath,
 	std::vector<fileEntry_t> vFileList;
 	bool ret = getFiles( json["files"], vFileList, sOutPath );
 
-	if (ret) {
-		if ( sOutPath.empty() && sExtractFile.empty() ) {
-			// sort file list
-			auto lambda = [](const fileEntry_t &a, const fileEntry_t &b) {
-				return strcmp(a.path.c_str(), b.path.c_str()) < 0;
-			};
-			std::sort( vFileList.begin(), vFileList.end(), lambda );
+	if ( !ret ) {
+		m_ifsInputFile.close();
+		return false;
+	}
 
-			// print file list
-			for ( const auto &e : vFileList )
-				std::cout << e.path << std::endl;
-		} else {
-			if ( !sExtractFile.empty() ) {
-				// extract single file
-				for ( const auto &e : vFileList ) {
-					if (e.path == sExtractFile) {
-						// basename
-						size_t pos = sExtractFile.find_last_of(DIR_SEPARATOR);
-						if ( pos != std::string::npos )
-							sExtractFile.erase(0, pos+1);
+	if ( !sExtractFile.empty() ) {
+		// extract single file
+		for ( const auto &e : vFileList ) {
+			if ( e.path == sExtractFile ) {
+				// basename
+				size_t pos = sExtractFile.find_last_of(DIR_SEPARATOR);
+				if ( pos != std::string::npos )
+					sExtractFile.erase(0, pos+1);
 
-						ret = unpackSingleFile( e, sExtractFile );
-						break;
-					}
-				}
-			} else {
-				// extract all files
-				ret = unpackFiles( vFileList );
+				ret = unpackSingleFile( e, sExtractFile );
+				break;
 			}
 		}
+	} else if ( sOutPath.empty() ) {
+		// print file list
+
+		//auto lambda = [](const fileEntry_t &a, const fileEntry_t &b) {
+		//	return strcmp(a.path.c_str(), b.path.c_str()) < 0;
+		//};
+		//std::sort( vFileList.begin(), vFileList.end(), lambda );
+		for ( const auto &e : vFileList )
+			std::cout << e.path << std::endl;
+	} else {
+		// extract all files
+		DIR *dir = opendir( sOutPath.c_str() );
+
+		// "Directory does not exist" is the only error we accept
+		if ( !dir && errno != ENOENT ) {
+			int errsv = errno;
+			std::cerr << "error trying to open directory:" << std::endl;
+			errno = errsv;
+			perror( sOutPath.c_str() );
+			m_ifsInputFile.close();
+			return false;
+		}
+
+		// check if directory is empty
+		if ( dir ) {
+			struct dirent *ent;
+			int i = 0;
+			while ( (ent = readdir(dir)) ) i++;
+			if (i > 2) {
+				std::cerr << "directory is not empty: " << sOutPath << std::endl;
+				m_ifsInputFile.close();
+				return false;
+			}
+			closedir(dir);
+		}
+
+		ret = unpackFiles( vFileList );
 	}
 
 	m_ifsInputFile.close();
