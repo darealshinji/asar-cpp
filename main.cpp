@@ -3,13 +3,21 @@
 #include "asar.h"
 
 
+// add support for --unpack and --unpack-dir options?
 static int printHelp(const char *argv0) {
-	std::cout << "Usage: " << argv0 << " [command] ...\n\n"
+	std::cout <<
+		"Usage: " << argv0 << " [options] [command]\n"
+		"\n"
+		"Manipulate asar archive files\n"
+		"\n"
+		"Options:\n"
+		"  -h, --help                            display help for command\n"
+		"\n"
 		"Commands:\n"
-		"  pack|p <dir> <output>                 create asar archive\n"
-		"  list|l <archive>                      list files of asar archive\n"
+		"  pack|p [options] <dir> <output>       create asar archive\n"
+		"  list|l [options] <archive>            list files of asar archive\n"
+		"  extract-file|ef <archive> <filename>  extract one file from archive\n"
 		"  extract|e <archive> <dest>            extract archive\n"
-		"  extract-file|ef <archive> <filename>  extract one file from archive"
 		<< std::endl;
 	return 1;
 }

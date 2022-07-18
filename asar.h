@@ -14,14 +14,17 @@ private:
 		std::string path;
 		size_t size;
 		size_t offset;
-		char type;  // 'F' regular file, 'L' symbolic link, 'X' executable file
+		char type;  // 'F' regular file
+					// 'L' symbolic link
+					// 'X' executable file
+					// 'D' directory (empty)
 		std::string link_target;
 	} fileEntry_t;
 
 	std::ifstream m_ifsInputFile;
 	size_t m_headerSize = 0;
 
-	bool getFiles( rapidjson::Value& object, std::vector<fileEntry_t> &vFileList, const std::string &sPath );
+	int getFiles( rapidjson::Value& object, std::vector<fileEntry_t> &vFileList, const std::string &sPath );
 	bool unpackFiles( const std::vector<fileEntry_t> &vFileList );
 	bool unpackSingleFile( const fileEntry_t &file, const std::string &sOutPath );
 	bool createJsonHeader( const std::string &sPath, std::string &sHeader, size_t &szOffset, std::vector<fileEntry_t> &vFileList );

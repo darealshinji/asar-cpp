@@ -127,18 +127,32 @@ bool asarArchive::createJsonHeader( const std::string &sPath, std::string &sHead
 	return true;
 }
 
-bool asarArchive::getFiles( rapidjson::Value& object, std::vector<fileEntry_t> &vFileList, const std::string &sPath ) {
+int asarArchive::getFiles( rapidjson::Value& object, std::vector<fileEntry_t> &vFileList, const std::string &sPath ) {
 	if ( !object.IsObject() ) // how ?
-		return false;
+		return -1;
 
-	for ( auto itr = object.MemberBegin(); itr != object.MemberEnd(); ++itr ) {
+	int n = 0;
+
+	for ( auto itr = object.MemberBegin(); itr != object.MemberEnd(); ++itr, ++n ) {
 		rapidjson::Value& vMember = itr->value;
 		if ( !vMember.IsObject() ) continue;
 
 		std::string sFilePath = sPath + itr->name.GetString();
 
 		if ( vMember.HasMember("files") ) {
-			getFiles( vMember["files"], vFileList, sFilePath + DIR_SEPARATOR );
+			int ret = getFiles( vMember["files"], vFileList, sFilePath + DIR_SEPARATOR );
+
+			if ( ret == 0 ) {
+				// create empty directory entry
+				fileEntry_t file;
+				file.path = sFilePath;
+				file.size = 0;
+				file.offset = 0;
+				file.type = 'D';
+				vFileList.push_back( file );
+				continue;
+			} else if ( ret == -1 )
+				return -1;
 		} else {
 			fileEntry_t file;
 
@@ -148,6 +162,14 @@ bool asarArchive::getFiles( rapidjson::Value& object, std::vector<fileEntry_t> &
 				file.offset = 0;
 				file.type = 'L';
 				file.link_target = vMember["link"].GetString();
+				vFileList.push_back( file );
+				continue;
+			} else if ( vMember.HasMember("directory") && vMember["directory"].IsString() ) {
+				file.path = sFilePath;
+				file.size = 0;
+				file.offset = 0;
+				file.type = 'D';
+				vFileList.push_back( file );
 				continue;
 			}
 
@@ -170,7 +192,7 @@ bool asarArchive::getFiles( rapidjson::Value& object, std::vector<fileEntry_t> &
 		}
 	}
 
-	return true;
+	return n;
 }
 
 bool asarArchive::unpackFiles( const std::vector<fileEntry_t> &vFileList ) {
@@ -217,6 +239,8 @@ bool asarArchive::unpackSingleFile( const fileEntry_t &file, const std::string &
 		}
 #endif
 		return true;
+	} else if (file.type == 'D') {
+		return (_mkdir(sOutPath.c_str()) == 0);
 	}
 
 	std::ofstream ofsOutputFile( sOutPath.c_str(), std::ios::trunc | std::ios::binary );
