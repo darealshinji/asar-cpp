@@ -26,7 +26,13 @@
 #define BUFF_SIZE (512*1024)
 
 
-bool asarArchive::createJsonHeader( const std::string &sPath, std::string &sHeader, size_t &szOffset, std::vector<fileEntry_t> &vFileList ) {
+bool asarArchive::createJsonHeader(
+		const std::string &sPath,
+		std::string &sHeader,
+		size_t &szOffset,
+		std::vector<fileEntry_t> &vFileList,
+		bool excludeHidden
+) {
 	DIR* dir = opendir( sPath.c_str() );
 	if ( !dir ) {
 		perror(sPath.c_str());
@@ -38,8 +44,24 @@ bool asarArchive::createJsonHeader( const std::string &sPath, std::string &sHead
 	std::vector<std::string> entries;
 
 	while ( (file = readdir(dir)) ) {
-		if ( strcmp(file->d_name, ".") != 0 && strcmp(file->d_name, "..") != 0 )
+		if ( strcmp(file->d_name, ".") == 0 || strcmp(file->d_name, "..") == 0 )
+			continue;
+
+#ifdef _WIN32
+		if (excludeHidden) {
+			std::string s = sPath + "\\";
+			s += file->d_name;
+
+			DWORD res = GetFileAttributesA(s.c_str());
+			if ( res == INVALID_FILE_ATTRIBUTES || !(res & FILE_ATTRIBUTE_HIDDEN) )
+				entries.push_back(file->d_name);
+		} else {
 			entries.push_back(file->d_name);
+		}
+#else
+		if ( !(excludeHidden && file->d_name[0] == '.') )
+			entries.push_back(file->d_name);
+#endif
 	}
 
 	std::sort(entries.begin(), entries.end());
@@ -52,9 +74,9 @@ bool asarArchive::createJsonHeader( const std::string &sPath, std::string &sHead
 		DIR* isDir = opendir( sLocalPath.c_str() );
 
 		if ( isDir ) {
-			sHeader += "\"" + e + "\":{\"files\":{";
 			closedir( isDir );
-			createJsonHeader( sLocalPath, sHeader, szOffset, vFileList );
+			sHeader += "\"" + e + "\":{\"files\":{";
+			createJsonHeader( sLocalPath, sHeader, szOffset, vFileList, excludeHidden );
 			sHeader += "}}";
 		} else {
 			fileEntry_t entry;
@@ -401,12 +423,12 @@ bool asarArchive::unpack( const std::string &sArchivePath, std::string sOutPath,
 }
 
 // Pack archive
-bool asarArchive::pack( const std::string &sPath, const std::string &sFinalName ) {
+bool asarArchive::pack( const std::string &sPath, const std::string &sFinalName, bool excludeHidden ) {
 	std::vector<fileEntry_t> vFileList;
 	std::string sHeader = "{\"files\":{";
 	size_t szOffset = 0;
 
-	if ( !createJsonHeader( sPath, sHeader, szOffset, vFileList ) )
+	if ( !createJsonHeader( sPath, sHeader, szOffset, vFileList, excludeHidden ) )
 		return false;
 
 	sHeader += "}}";
