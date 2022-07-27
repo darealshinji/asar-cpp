@@ -7,8 +7,9 @@ Just drag and drop the archive on the executable or use the command line
 
 ### Command line
 ```bash
-$ asar unpack [-o out] archive...
+$ asar extract out archive
 ```
 
 ## Dependencies
 [rapidjson](https://github.com/Tencent/rapidjson)
+[dirent for MSVC](https://github.com/tronkko/dirent)
