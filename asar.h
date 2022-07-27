@@ -25,13 +25,21 @@ private:
 	size_t m_headerSize = 0;
 
 	int getFiles( rapidjson::Value& object, std::vector<fileEntry_t> &vFileList, const std::string &sPath );
-	bool unpackFiles( const std::vector<fileEntry_t> &vFileList );
+	bool unpackFiles( std::vector<fileEntry_t> &vFileList );
 	bool unpackSingleFile( const fileEntry_t &file, const std::string &sOutPath );
-	bool createJsonHeader( const std::string &sPath, std::string &sHeader, size_t &szOffset, std::vector<fileEntry_t> &vFileList, bool excludeHidden );
+
+	bool createJsonHeader(
+		const std::string &sPath,
+		std::string &sHeader,
+		size_t &szOffset,
+		std::vector<fileEntry_t> &vFileList,
+		const char *unpack,
+		const char *unpackDir,
+		bool excludeHidden);
 
 public:
 	bool unpack( const std::string &sArchivePath, std::string sOutPath, std::string sExtractFile = "" );
-	bool pack( const std::string &sPath, const std::string &sFinalName, bool excludeHidden );
+	bool pack( const std::string &sPath, const std::string &sArchivePath, const char *unpack, const char *unpackDir, bool excludeHidden);
 	bool list( const std::string &sArchivePath );
 
 };

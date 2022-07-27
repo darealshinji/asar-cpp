@@ -2,6 +2,7 @@
 #include <string>
 #include <algorithm>
 #include <fstream>
+#include <regex>
 #include <rapidjson/document.h>
 #include <rapidjson/error/en.h>
 #include <dirent.h>
@@ -14,13 +15,15 @@
 // assuming Little Endian for Windows
 # define htole32(x) x
 # define le32toh(x) x
-# define DIR_SEPARATOR '\\'
+# define DIR_SEPARATORS      "\\/"
+# define IS_DIR_SEPARATOR(x) (x=='\\' || x=='/')
 #else
 # include <endian.h>
 # include <sys/stat.h>
 # include <unistd.h>
 # define _mkdir(a) mkdir(a,0777)
-# define DIR_SEPARATOR '/'
+# define DIR_SEPARATORS      "/"
+# define IS_DIR_SEPARATOR(x) (x=='/')
 #endif // _WIN32
 
 #define BUFF_SIZE (512*1024)
@@ -31,6 +34,8 @@ bool asarArchive::createJsonHeader(
 		std::string &sHeader,
 		size_t &szOffset,
 		std::vector<fileEntry_t> &vFileList,
+		const char *unpack,
+		const char *unpackDir,
 		bool excludeHidden
 ) {
 	DIR* dir = opendir( sPath.c_str() );
@@ -40,45 +45,54 @@ bool asarArchive::createJsonHeader(
 	}
 
 	struct dirent* file;
-	size_t uFileNum = 0;
 	std::vector<std::string> entries;
 
 	while ( (file = readdir(dir)) ) {
-		if ( strcmp(file->d_name, ".") == 0 || strcmp(file->d_name, "..") == 0 )
-			continue;
+		const char *p = file->d_name;
 
-#ifdef _WIN32
-		if (excludeHidden) {
-			std::string s = sPath + "\\";
-			s += file->d_name;
-
-			DWORD res = GetFileAttributesA(s.c_str());
-			if ( res == INVALID_FILE_ATTRIBUTES || !(res & FILE_ATTRIBUTE_HIDDEN) )
-				entries.push_back(file->d_name);
-		} else {
-			entries.push_back(file->d_name);
-		}
-#else
-		if ( !(excludeHidden && file->d_name[0] == '.') )
-			entries.push_back(file->d_name);
+		// ignore "." and ".."
+		if ( p[0] == '.' ) {
+#ifndef _WIN32
+			if (excludeHidden)
+				continue;
 #endif
+			if ( p[1] == 0 || (p[1] == '.' && p[2] == 0) )
+				continue;
+		}
+
+		entries.push_back(p);
 	}
 
 	std::sort(entries.begin(), entries.end());
-	const size_t uFolderSize = entries.size();
 
 	for ( const auto &e : entries ) {
-		std::string sLocalPath = sPath;
-		sLocalPath += DIR_SEPARATOR;
-		sLocalPath += e;
+		std::string sLocalPath = sPath + "/" + e;
+#ifdef _WIN32
+		bool attrHidden = false;
+		DWORD res = GetFileAttributesA(sLocalPath.c_str());
+		if ( res != INVALID_FILE_ATTRIBUTES && (res & FILE_ATTRIBUTE_HIDDEN) )
+			attrHidden = true;
+
+		if (excludeHidden && attrHidden)
+			continue;
+#endif
+
 		DIR* isDir = opendir( sLocalPath.c_str() );
 
 		if ( isDir ) {
 			closedir( isDir );
+
+			if ( unpackDir && std::regex_match(sLocalPath, std::regex(unpackDir)) )
+				continue;
+
 			sHeader += "\"" + e + "\":{\"files\":{";
-			createJsonHeader( sLocalPath, sHeader, szOffset, vFileList, excludeHidden );
+			createJsonHeader( sLocalPath, sHeader, szOffset, vFileList, unpack, unpackDir, excludeHidden );
+			sHeader.pop_back();  // remove trailing comma
 			sHeader += "}}";
 		} else {
+			if ( unpack && std::regex_match(sLocalPath, std::regex(unpack)) )
+				continue;
+
 			fileEntry_t entry;
 #ifdef _WIN32
 			HANDLE hFile = CreateFile(sLocalPath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, NULL, NULL);
@@ -100,8 +114,13 @@ bool asarArchive::createJsonHeader(
 
 			entry.path = sLocalPath;
 			entry.size = lFileSize.QuadPart;
-			sHeader += "\"" + e + "\":{\"size\":" + std::to_string(entry.size) + ",\"offset\":\"" + std::to_string(szOffset) + "\"}";
+			sHeader += "\"" + e + "\":{\"size\":" + std::to_string(entry.size) + ",\"offset\":\"" + std::to_string(szOffset) + "\"";
 			szOffset += entry.size;
+
+			if (!excludeHidden && attrHidden)
+				sHeader += ",\"hidden\":true";
+
+			sHeader += '}';
 #else
 			struct stat st;
 			if ( lstat( sLocalPath.c_str(), &st ) == -1) {
@@ -140,8 +159,7 @@ bool asarArchive::createJsonHeader(
 			vFileList.push_back(entry);
 		}
 
-		if ( ++uFileNum < uFolderSize )
-			sHeader.push_back(',');
+		sHeader.push_back(',');
 	}
 
 	closedir(dir);
@@ -162,7 +180,7 @@ int asarArchive::getFiles( rapidjson::Value& object, std::vector<fileEntry_t> &v
 		std::string sFilePath = sPath + itr->name.GetString();
 
 		if ( vMember.HasMember("files") ) {
-			int ret = getFiles( vMember["files"], vFileList, sFilePath + DIR_SEPARATOR );
+			int ret = getFiles( vMember["files"], vFileList, sFilePath + '/' );
 
 			if ( ret == 0 ) {
 				// create empty directory entry
@@ -217,23 +235,16 @@ int asarArchive::getFiles( rapidjson::Value& object, std::vector<fileEntry_t> &v
 	return n;
 }
 
-bool asarArchive::unpackFiles( const std::vector<fileEntry_t> &vFileList ) {
-	for ( const auto &file : vFileList ) {
-		//rmdir(file.path.c_str());  // in case the path exists and is a directory (must be empty)
-		//unlink(file.path.c_str());  // don't accidentally write into a link target
-
-		char *copy = strdup(file.path.c_str());
-		char *p = copy;
-
+bool asarArchive::unpackFiles( std::vector<fileEntry_t> &vFileList ) {
+	for ( auto &file : vFileList ) {
 		// like "mkdir -p"
-		while (*p++) {
-			if (*p == DIR_SEPARATOR) {
-				*p = 0;
-				_mkdir(copy);
-				*p = DIR_SEPARATOR;
+		for (auto &e : file.path) {
+			if ( IS_DIR_SEPARATOR(e) ) {
+				e = 0;
+				_mkdir(file.path.c_str());
+				e = '/';
 			}
 		}
-		free(copy);
 
 		if ( !unpackSingleFile(file, file.path) )
 			return false;
@@ -350,8 +361,8 @@ bool asarArchive::unpack( const std::string &sArchivePath, std::string sOutPath,
 	}
 
 	if ( !sOutPath.empty() ) {
-		if ( sOutPath.back() != DIR_SEPARATOR )
-			sOutPath.push_back( DIR_SEPARATOR );
+		if ( !IS_DIR_SEPARATOR( sOutPath.back() ) )
+			sOutPath.push_back( '/' );
 
 		if ( !sExtractFile.empty() )
 			sExtractFile.insert(0, sOutPath);
@@ -370,7 +381,7 @@ bool asarArchive::unpack( const std::string &sArchivePath, std::string sOutPath,
 		for ( const auto &e : vFileList ) {
 			if ( e.path == sExtractFile ) {
 				// basename
-				size_t pos = sExtractFile.find_last_of(DIR_SEPARATOR);
+				size_t pos = sExtractFile.find_last_of(DIR_SEPARATORS);
 				if ( pos != std::string::npos )
 					sExtractFile.erase(0, pos+1);
 
@@ -423,19 +434,26 @@ bool asarArchive::unpack( const std::string &sArchivePath, std::string sOutPath,
 }
 
 // Pack archive
-bool asarArchive::pack( const std::string &sPath, const std::string &sFinalName, bool excludeHidden ) {
+bool asarArchive::pack(
+	const std::string &sPath,
+	const std::string &sArchivePath,
+	const char *unpack,
+	const char *unpackDir,
+	bool excludeHidden
+) {
 	std::vector<fileEntry_t> vFileList;
 	std::string sHeader = "{\"files\":{";
 	size_t szOffset = 0;
 
-	if ( !createJsonHeader( sPath, sHeader, szOffset, vFileList, excludeHidden ) )
+	if ( !createJsonHeader( sPath, sHeader, szOffset, vFileList, unpack, unpackDir, excludeHidden ) )
 		return false;
 
+	sHeader.pop_back();  // remove trailing comma
 	sHeader += "}}";
 
-	std::ofstream ofsOutputFile( sFinalName, std::ios::binary | std::ios::trunc );
+	std::ofstream ofsOutputFile( sArchivePath, std::ios::binary | std::ios::trunc );
 	if ( !ofsOutputFile.is_open() ) {
-		std::cerr << "cannot open file for writing: " << sFinalName << std::endl;
+		std::cerr << "cannot open file for writing: " << sArchivePath << std::endl;
 		return false;
 	}
 
