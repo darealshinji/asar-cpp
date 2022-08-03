@@ -142,7 +142,7 @@ bool asarArchive::createJsonHeader(
 			sHeader += "\"" + e + "\":{\"size\":" + std::to_string(entry.size) + ",\"offset\":\"" + std::to_string(szOffset) + "\"";
 			szOffset += entry.size;
 
-			if (!excludeHidden && attrHidden)
+			if (attrHidden)
 				sHeader += ",\"hidden\":true";
 
 			sHeader += '}';
@@ -319,8 +319,10 @@ bool asarArchive::unpackSingleFile( const fileEntry_t &file, const std::string &
 			uSize -= BUFF_SIZE;
 		}
 
-		m_ifsInputFile.read(fileBuf, uSize);
-		ofsOutputFile.write(fileBuf, uSize);
+		if (uSize > 0) {
+			m_ifsInputFile.read(fileBuf, uSize);
+			ofsOutputFile.write(fileBuf, uSize);
+		}
 	}
 
 	ofsOutputFile.close();
@@ -427,27 +429,24 @@ bool asarArchive::unpack( const std::string &sArchivePath, std::string sOutPath,
 		// extract all files
 		DIR *dir = opendir( sOutPath.c_str() );
 
-		// "Directory does not exist" is the only error we accept
-		if ( !dir && errno != ENOENT ) {
-			int errsv = errno;
-			std::cerr << "error trying to open directory:" << std::endl;
-			errno = errsv;
-			perror( sOutPath.c_str() );
-			m_ifsInputFile.close();
-			return false;
-		}
-
 		// check if directory is empty
 		if ( dir ) {
-			struct dirent *ent;
 			int i = 0;
-			while ( (ent = readdir(dir)) ) i++;
+			while ( readdir(dir) ) i++;
 			closedir(dir);
 			if (i > 2) {
 				std::cerr << "directory is not empty: " << sOutPath << std::endl;
 				m_ifsInputFile.close();
 				return false;
 			}
+		} else if (errno != ENOENT ) {
+			// "Directory does not exist" is the only error we accept
+			int errsv = errno;
+			std::cerr << "error trying to open directory:" << std::endl;
+			errno = errsv;
+			perror( sOutPath.c_str() );
+			m_ifsInputFile.close();
+			return false;
 		}
 
 		ret = unpackFiles( vFileList );
@@ -510,8 +509,10 @@ bool asarArchive::pack(
 	char fileBuf[BUFF_SIZE];
 
 	for (const auto &e : vFileList) {
-		if (e.type == 'L') continue;  // skip symbolic link
-
+#ifndef _WIN32
+		// skip symbolic link
+		if (e.type == 'L') continue;
+#endif
 		std::ifstream ifsFile( e.path, std::ios::binary );
 
 		if ( !ifsFile.is_open() ) {
@@ -529,8 +530,10 @@ bool asarArchive::pack(
 				szFile -= BUFF_SIZE;
 			}
 
-			ifsFile.read(fileBuf, szFile);
-			ofsOutputFile.write(fileBuf, szFile);
+			if (szFile > 0) {
+				ifsFile.read(fileBuf, szFile);
+				ofsOutputFile.write(fileBuf, szFile);
+			}
 		}
 
 		ifsFile.close();

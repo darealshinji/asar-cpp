@@ -115,8 +115,8 @@ int main( int argc, char *argv[] ) {
 	if ( strcmp(argv[1], "p") == 0 || strcmp(argv[1], "pack") == 0 ) {
 		int shift = 0;
 		bool excludeHidden = false;
-		const char *unpack = nullptr;
-		const char *unpackDir = nullptr;
+		const char *unpack = NULL;
+		const char *unpackDir = NULL;
 
 		if ( argc < 4 )
 			return printHelp(argv[0]);
