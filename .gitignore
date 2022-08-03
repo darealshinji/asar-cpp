@@ -1,0 +1,5 @@
+/asar
+*.exe
+*.o
+*.obj
+*.asar
