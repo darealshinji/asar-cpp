@@ -1,5 +1,5 @@
 CXX := g++
-CXXFLAGS := -Wall -O3 -Irapidjson/include
+CXXFLAGS := -Wall -O3 -Irapidjson/include -std=c++11
 
 
 all: asar
