@@ -361,7 +361,10 @@ bool asarArchive::unpack( const std::string &sArchivePath, std::string sOutPath,
 	const uint32_t uHdr3 = le32toh( *(reinterpret_cast<uint32_t*>(sizeBuf + 8)) );
 	const uint32_t uSize = le32toh( *(reinterpret_cast<uint32_t*>(sizeBuf + 12)) );
 
-	if ( uHdr1 != 4 || uHdr2 != (uSize + 8) || uHdr3 != (uSize + 4) ) {
+    // The JSON header is written in 4 byte blocks so it can contain spaces at the end
+    const unsigned short int uHdrX = uSize % 4 > 0 ? 4 - uSize % 4 : 0;
+        
+	if ( uHdr1 != 4 || uHdr2 != (uSize + uHdrX + 8) || uHdr3 != (uSize + uHdrX + 4) ) {
 		std::cerr << "unexpected file header data" << std::endl;
 		m_ifsInputFile.close();
 		return false;
