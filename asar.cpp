@@ -43,7 +43,11 @@
 # define DIR_SEPARATORS      "\\/"
 # define IS_DIR_SEPARATOR(x) (x=='\\' || x=='/')
 #else
+#ifdef __APPLE__
+# include "darwin/endian.h"
+#else
 # include <endian.h>
+#endif
 # include <sys/stat.h>
 # include <unistd.h>
 # define _mkdir(a) mkdir(a,0777)
